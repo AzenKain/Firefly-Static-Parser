@@ -1,0 +1,32 @@
+[package]
+name = "firefly-static-parser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+il2cpp_dumper = "0.5.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+iced-x86 = { version = "1.21", optional = true }
+
+[features]
+disasm = ["dep:iced-x86"]
+
+[[bin]]
+name = "firefly-static-parser"
+path = "src/main.rs"
+
+[[bin]]
+name = "probe_helper"
+path = "src/bin/probe_helper.rs"
+
+[[bin]]
+name = "disasm_helper"
+path = "src/bin/disasm_helper.rs"
+required-features = ["disasm"]
+
+[[bin]]
+name = "inspect_helper"
+path = "src/bin/inspect_helper.rs"

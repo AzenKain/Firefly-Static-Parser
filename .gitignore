@@ -1,0 +1,19 @@
+# Rust compilation build outputs
+target/
+
+# Ignore diagnostic binaries and documentation
+src/bin/
+docs/
+
+# Dump output directories
+static-output/
+
+# Local game assemblies and metadata dat files (do not commit to Git)
+*.dll
+*.dat
+*.exe
+
+# Local IDE configuration files
+.idea/
+.vscode/
+*.user
