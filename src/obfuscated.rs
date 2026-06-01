@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 
 use crate::metadata::{has_standard_metadata_magic, read_u32_le};
 
-const HSR_METADATA_LOADER_RVA: usize = 0x3948920;
+const CUSTOM_METADATA_LOADER_RVA: usize = 0x3948920;
 
 pub struct ObfuscatedFiles {
     pub game_assembly: PathBuf,
@@ -64,7 +64,7 @@ pub fn load_obfuscated_metadata(files: ObfuscatedFiles) -> Result<Vec<u8>> {
     }
 
     let loaded = (|| -> Result<Vec<u8>> {
-        let func_addr = module as usize + HSR_METADATA_LOADER_RVA;
+        let func_addr = module as usize + CUSTOM_METADATA_LOADER_RVA;
         let load_metadata: LoadMetadata = unsafe { std::mem::transmute(func_addr) };
 
         if staged.startup_staged {
