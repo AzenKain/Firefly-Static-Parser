@@ -18,6 +18,7 @@ const GENERIC_CLASS_ENTRY_SIZE: usize = 8;
 const GENERIC_CONTAINER_ENTRY_SIZE: usize = 16;
 const GENERIC_INST_ENTRY_SIZE: usize = 0x10;
 const GENERIC_PARAMETER_ENTRY_SIZE: usize = 14;
+const FIELD_DEFAULT_VALUE_ENTRY_SIZE: usize = 12;
 const TYPE_ATTRIBUTE_KEY: u32 = 0x0112_7490;
 const TYPE_PARENT_KEY: u32 = 0x48F9_5547;
 const TYPE_BASE_NONE: u32 = 0x48F9_5546;
@@ -60,6 +61,13 @@ pub struct LayoutField {
     pub type_name: String,
     pub flags: u16,
     pub offset: u32,
+    pub index: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct LayoutEnumValue {
+    pub name: String,
+    pub value: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -236,11 +244,10 @@ impl LayoutMetadata {
         };
 
         let mut fields = Vec::with_capacity(type_def.field_count);
-        for local_index in 0..type_def.field_count {
-            let field_index = field_start + local_index;
+        for (local_index, index) in (type_def.field_start.unwrap()..type_def.field_start.unwrap() + type_def.field_count).enumerate() {
             let entry_offset = self.layout.payload_offset as usize
                 + self.layout.global_field_table_offset as usize
-                + field_index * FIELD_ENTRY_SIZE;
+                + index * FIELD_ENTRY_SIZE;
             require_range(
                 &self.global_data,
                 entry_offset,
@@ -256,7 +263,7 @@ impl LayoutMetadata {
 
             let mut name = self.decode_string(name_index)?;
             if name.is_empty() {
-                name = format!("Field_{field_index}");
+                name = format!("Field_{index}");
             }
             let type_name = self.type_name(field_type_index, false)?;
             let flags = self.il2cpp_type_attrs(field_type_index)?;
@@ -272,10 +279,104 @@ impl LayoutMetadata {
                 type_name,
                 flags,
                 offset,
+                index: index as usize,
             });
         }
 
         Ok(fields)
+    }
+
+    pub fn read_enum_values(
+        &mut self,
+        type_index: usize,
+        type_def: &LayoutTypeDef,
+    ) -> Result<Vec<LayoutEnumValue>> {
+        if !type_def.is_enum {
+            return Ok(Vec::new());
+        }
+
+        let mut values = Vec::new();
+        for field in self.read_fields(type_index, type_def)? {
+            if field.name == "value__" {
+                continue;
+            }
+            if field.flags & 0x40 == 0 {
+                continue;
+            }
+
+            let data = self
+                .read_field_default_value_data(field.index, std::mem::size_of::<i32>())?
+                .with_context(|| {
+                    format!(
+                        "enum {} field {} has no default-value table entry",
+                        self.type_def_full_name(type_index)
+                            .unwrap_or_else(|_| type_def.name.clone()),
+                        field.name
+                    )
+                })?;
+            let value = i32::from_le_bytes(data.try_into().map_err(|_| {
+                anyhow!(
+                    "enum {} field {} default value is not i32-sized",
+                    type_def.name,
+                    field.name
+                )
+            })?);
+            values.push(LayoutEnumValue {
+                name: field.name,
+                value,
+            });
+        }
+
+        Ok(values)
+    }
+
+    pub fn read_field_default_value_data(
+        &self,
+        field_index: usize,
+        size: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        let table_offset = self.layout.payload_offset as usize
+            + self.layout.global_field_default_value_table_offset as usize;
+        let field_index = i32::try_from(field_index)
+            .with_context(|| format!("field index {field_index} does not fit in i32"))?;
+
+        let mut low = 0_usize;
+        let mut high = self.layout.field_default_value_count as usize;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let entry_offset = table_offset + mid * FIELD_DEFAULT_VALUE_ENTRY_SIZE;
+            require_range(
+                &self.global_data,
+                entry_offset,
+                FIELD_DEFAULT_VALUE_ENTRY_SIZE,
+                "field default value table",
+            )?;
+            let entry_field_index = read_i32(&self.global_data, entry_offset + 8)?;
+            match entry_field_index.cmp(&field_index) {
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid,
+                std::cmp::Ordering::Equal => {
+                    let data_index = read_i32(&self.global_data, entry_offset + 4)?;
+                    if data_index < 0 {
+                        return Ok(None);
+                    }
+
+                    let data_offset = self.layout.payload_offset as usize
+                        + self.layout.global_field_default_value_data_offset as usize
+                        + data_index as usize;
+                    require_range(
+                        &self.global_data,
+                        data_offset,
+                        size,
+                        "field default value data",
+                    )?;
+                    return Ok(Some(
+                        self.global_data[data_offset..data_offset + size].to_vec(),
+                    ));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn read_images(&mut self) -> Result<Vec<LayoutImage>> {
@@ -694,26 +795,54 @@ impl LayoutMetadata {
     fn read_il2cpp_type(&self, type_index: u32) -> Result<Il2CppTypeEntry> {
         let rva = self
             .il2cpp_type_table_rva
-            .checked_add(type_index.checked_mul(8).ok_or_else(|| {
+            .checked_add(type_index.checked_mul(16).ok_or_else(|| {
                 anyhow!("Il2CppType index {type_index} overflows table byte offset")
             })?)
             .ok_or_else(|| anyhow!("Il2CppType index {type_index} overflows table RVA"))?;
-        let raw = self.pe.read_u64_rva(rva)?;
+        let raw_data = self.pe.read_u64_rva(rva)?;
+        let bits = self.pe.read_u32_rva(rva + 8)?;
+        let data = if raw_data >= self.image_base {
+            match self.il2cpp_type_pointer_to_index(raw_data) {
+                Ok(index) => index,
+                Err(_) => return self.read_pointed_il2cpp_type(raw_data),
+            }
+        } else {
+            raw_data as u32
+        };
         Ok(Il2CppTypeEntry {
-            data: raw as u32,
-            kind: (raw >> 48) as u8,
-            bits: (raw >> 56) as u8,
+            data,
+            kind: (bits >> 16) as u8,
+            bits: (bits >> 24) as u8,
+        })
+    }
+
+    fn read_pointed_il2cpp_type(&self, type_va: u64) -> Result<Il2CppTypeEntry> {
+        let type_rva = va_to_rva(type_va, self.image_base, "Il2CppType pointer")?;
+        let raw_data = self.pe.read_u64_rva(type_rva)?;
+        let bits = self.pe.read_u32_rva(type_rva + 8)?;
+        let data = if raw_data >= self.image_base {
+            self.il2cpp_type_pointer_to_index(raw_data)
+                .unwrap_or(raw_data as u32)
+        } else {
+            raw_data as u32
+        };
+        Ok(Il2CppTypeEntry {
+            data,
+            kind: (bits >> 16) as u8,
+            bits: (bits >> 24) as u8,
         })
     }
 
     fn read_il2cpp_type_raw(&self, type_index: u32) -> Result<u64> {
         let rva = self
             .il2cpp_type_table_rva
-            .checked_add(type_index.checked_mul(8).ok_or_else(|| {
+            .checked_add(type_index.checked_mul(16).ok_or_else(|| {
                 anyhow!("Il2CppType index {type_index} overflows table byte offset")
             })?)
             .ok_or_else(|| anyhow!("Il2CppType index {type_index} overflows table RVA"))?;
-        self.pe.read_u64_rva(rva)
+        let raw_data = self.pe.read_u64_rva(rva)?;
+        let bits = self.pe.read_u32_rva(rva + 8)?;
+        Ok(((bits as u64) << 32) | (raw_data as u32 as u64))
     }
 
     fn il2cpp_type_attrs(&self, type_index: u32) -> Result<u16> {
@@ -730,12 +859,12 @@ impl LayoutMetadata {
                     self.il2cpp_type_table_rva
                 )
             })?;
-        if byte_offset % 8 != 0 {
+        if byte_offset % 16 != 0 {
             return Err(anyhow!(
                 "Il2CppType pointer RVA 0x{type_rva:X} is not aligned to an Il2CppType entry"
             ));
         }
-        Ok(byte_offset / 8)
+        Ok(byte_offset / 16)
     }
 
     fn field_offset(&self, type_index: usize, local_field_index: usize) -> Result<u32> {
@@ -1065,6 +1194,13 @@ fn require_range(data: &[u8], offset: usize, size: usize, label: &str) -> Result
     Ok(())
 }
 
+fn read_i32(data: &[u8], offset: usize) -> Result<i32> {
+    let bytes = data
+        .get(offset..offset + 4)
+        .ok_or_else(|| anyhow!("read out of range at 0x{offset:X}"))?;
+    Ok(i32::from_le_bytes(bytes.try_into()?))
+}
+
 fn read_u16(data: &[u8], offset: usize) -> Result<u16> {
     let bytes = data
         .get(offset..offset + 2)
@@ -1079,12 +1215,6 @@ fn read_u32(data: &[u8], offset: usize) -> Result<u32> {
     Ok(u32::from_le_bytes(bytes.try_into()?))
 }
 
-fn read_i32(data: &[u8], offset: usize) -> Result<i32> {
-    let bytes = data
-        .get(offset..offset + 4)
-        .ok_or_else(|| anyhow!("read out of range at 0x{offset:X}"))?;
-    Ok(i32::from_le_bytes(bytes.try_into()?))
-}
 
 fn read_u64(data: &[u8], offset: usize) -> Result<u64> {
     let bytes = data

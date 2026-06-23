@@ -18,9 +18,6 @@ disasm = ["dep:iced-x86"]
 name = "firefly-static-parser"
 path = "src/main.rs"
 
-[[bin]]
-name = "probe_helper"
-path = "src/bin/probe_helper.rs"
 
 [[bin]]
 name = "disasm_helper"

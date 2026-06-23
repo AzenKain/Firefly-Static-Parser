@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs};
+use std::{collections::{BTreeMap, HashMap}, fs};
 
 use anyhow::{Context, Result, anyhow};
 
@@ -100,8 +100,17 @@ fn write_type(
     }
     output.push_str("\n{");
     output.push_str("\n\t// Fields\n");
+    let mut enum_values = HashMap::new();
+    if type_def.is_enum {
+        if let Ok(values) = metadata.read_enum_values(type_index, type_def) {
+            for val in values {
+                enum_values.insert(val.name, val.value);
+            }
+        }
+    }
     for field in metadata.read_fields(type_index, type_def)? {
-        output.push_str(&write_field(&field));
+        let enum_val = enum_values.get(&field.name).copied();
+        output.push_str(&write_field(&field, enum_val));
     }
     output.push_str("\n\t// Methods\n");
 
@@ -116,14 +125,25 @@ fn write_type(
     Ok(output)
 }
 
-fn write_field(field: &LayoutField) -> String {
-    format!(
-        "\t{}{} {}; // 0x{:x}\n",
-        field_prefix(field.flags),
-        field.type_name,
-        field.name,
-        field.offset
-    )
+fn write_field(field: &LayoutField, enum_val: Option<i32>) -> String {
+    if let Some(val) = enum_val {
+        format!(
+            "\t{}{} {} = {}; // 0x{:x}\n",
+            field_prefix(field.flags),
+            field.type_name,
+            field.name,
+            val,
+            field.offset
+        )
+    } else {
+        format!(
+            "\t{}{} {}; // 0x{:x}\n",
+            field_prefix(field.flags),
+            field.type_name,
+            field.name,
+            field.offset
+        )
+    }
 }
 
 fn write_method(method: &LayoutMethod) -> String {

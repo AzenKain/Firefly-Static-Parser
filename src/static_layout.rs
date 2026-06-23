@@ -34,6 +34,9 @@ pub struct StaticLayout {
     pub global_generic_container_table_offset: u32,
     pub global_generic_parameter_table_offset: u32,
     pub global_string_data_offset: u32,
+    pub global_field_default_value_table_offset: u32,
+    pub global_field_default_value_data_offset: u32,
+    pub field_default_value_count: u32,
 }
 
 pub fn inspect_game_assembly(path: &Path) -> Result<StaticLayout> {
@@ -96,6 +99,12 @@ pub fn inspect_game_assembly(path: &Path) -> Result<StaticLayout> {
     let global_string_data_offset = image
         .read_u32_rva(globals.embedded_header_rva + 0x1B4)?
         .wrapping_add(0x8D43_A4EE);
+    let global_field_default_value_table_offset =
+        image.read_u32_rva(globals.embedded_header_rva + 0x1FC)? ^ 0x6238_CDB0;
+    let global_field_default_value_data_offset = image
+        .read_u32_rva(globals.embedded_header_rva + 0x3C)?
+        .wrapping_add(0x978B_E7A5);
+    let field_default_value_count = (image.read_u32_rva(globals.embedded_header_rva + 0x1DC)? ^ 0x3E0C_72F0) / 12;
 
     let layout = StaticLayout {
         static_initializer_rva: globals.initializer_rva,
@@ -126,6 +135,9 @@ pub fn inspect_game_assembly(path: &Path) -> Result<StaticLayout> {
         global_generic_container_table_offset,
         global_generic_parameter_table_offset,
         global_string_data_offset,
+        global_field_default_value_table_offset,
+        global_field_default_value_data_offset,
+        field_default_value_count,
     };
 
     print_layout(&layout);
