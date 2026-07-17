@@ -64,6 +64,10 @@ impl PeImage {
         self.image_base
     }
 
+    pub fn raw_data(&self) -> &[u8] {
+        &self.data
+    }
+
     pub fn read_u32_rva(&self, rva: u32) -> Result<u32> {
         let offset = self.rva_to_offset(rva)?;
         read_u32(&self.data, offset)
@@ -101,6 +105,17 @@ impl PeImage {
         }
 
         Err(anyhow!("RVA 0x{rva:X} is outside PE sections"))
+    }
+
+    pub fn file_offset_to_rva(&self, offset: usize) -> Option<u32> {
+        for section in &self.sections {
+            let start = section.raw_offset as usize;
+            let end = start.saturating_add(section.raw_size as usize);
+            if offset >= start && offset < end {
+                return Some(section.virtual_address + (offset - start) as u32);
+            }
+        }
+        None
     }
 
     #[allow(dead_code)]

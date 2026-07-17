@@ -8,7 +8,7 @@ use crate::{
     config::static_config,
     il2cpp_pe::init_pe,
     metadata::{CUSTOM_METADATA_MAGIC, prepare_metadata_data},
-    layout_output::generate_layout_outputs,
+    layout_model::output::generate_layout_outputs,
     output::generate_outputs,
 };
 
@@ -30,7 +30,12 @@ pub fn run() -> Result<()> {
     let raw_metadata = fs::read(&paths.metadata)
         .with_context(|| format!("failed to read {}", paths.metadata.display()))?;
     if raw_metadata.starts_with(CUSTOM_METADATA_MAGIC) {
-        return generate_layout_outputs(&paths, raw_metadata);
+        return generate_layout_outputs(
+            &paths.game_assembly,
+            paths.startup_metadata.as_deref(),
+            &paths.output_dir,
+            raw_metadata,
+        );
     }
 
     let metadata_data = prepare_metadata_data(&paths)?;

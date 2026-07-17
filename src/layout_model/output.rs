@@ -1,29 +1,33 @@
-use std::{collections::{BTreeMap, HashMap}, fs};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+};
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::{
-    args::InputPaths,
-    layout_model::{LayoutField, LayoutMetadata, LayoutMethod, LayoutTypeDef},
-};
+use super::{LayoutField, LayoutMetadata, LayoutMethod, LayoutTypeDef};
 
-pub fn generate_layout_outputs(paths: &InputPaths, global_data: Vec<u8>) -> Result<()> {
-    let startup_metadata = paths
-        .startup_metadata
-        .as_ref()
+pub fn generate_layout_outputs(
+    game_assembly: &std::path::Path,
+    startup_metadata: Option<&std::path::Path>,
+    output_dir: &std::path::Path,
+    global_data: Vec<u8>,
+) -> Result<()> {
+    let startup_metadata = startup_metadata
         .ok_or_else(|| anyhow!("startup-metadata.dat is required for static output"))?;
 
-    println!("Generating static dump.cs/methods.json...");
-    let mut metadata = LayoutMetadata::load(&paths.game_assembly, global_data, startup_metadata)?;
-    fs::create_dir_all(&paths.output_dir)
-        .with_context(|| format!("failed to create {}", paths.output_dir.display()))?;
+    let mut metadata = LayoutMetadata::load(game_assembly, global_data, startup_metadata)?;
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("failed to create {}", output_dir.display()))?;
 
+    println!("Generating static dump.cs...");
     let dump_cs = build_dump_cs(&mut metadata)?;
-    fs::write(paths.output_dir.join("dump.cs"), dump_cs)
+    fs::write(output_dir.join("dump.cs"), dump_cs)
         .with_context(|| "failed to write static dump.cs")?;
 
+    println!("Generating static methods.json...");
     let methods_json = build_methods_json(&mut metadata)?;
-    fs::write(paths.output_dir.join("methods.json"), methods_json)
+    fs::write(output_dir.join("methods.json"), methods_json)
         .with_context(|| "failed to write static methods.json")?;
 
     println!("Static output done.");
@@ -40,7 +44,6 @@ fn build_dump_cs(metadata: &mut LayoutMetadata) -> Result<String> {
 
     for image_index in 0..metadata.images().len() {
         let image = metadata.images()[image_index].clone();
-        println!("  dump.cs image {image_index}: {}", image.name);
         for type_index in image.type_start..image.type_start + image.type_count {
             let type_def = metadata.type_def(type_index)?.clone();
             output.push_str(&write_type(metadata, &type_def, type_index)?);
@@ -55,7 +58,6 @@ fn build_methods_json(metadata: &mut LayoutMetadata) -> Result<String> {
 
     for image_index in 0..metadata.images().len() {
         let image = metadata.images()[image_index].clone();
-        println!("  methods.json image {image_index}: {}", image.name);
         for type_index in image.type_start..image.type_start + image.type_count {
             let type_def = metadata.type_def(type_index)?.clone();
             let Some(method_start) = type_def.method_start else {
@@ -64,13 +66,14 @@ fn build_methods_json(metadata: &mut LayoutMetadata) -> Result<String> {
             let type_name = metadata.type_def_display_name(type_index, true)?;
 
             for method_index in method_start..method_start + type_def.method_count {
-                let method = metadata.read_method(method_index)?;
-                let key = format!(
-                    "{type_name}::{}({})",
-                    method.name,
-                    method.method_json_params.join(",")
-                );
-                methods.insert(key, format!("0x{:x}", method.rva));
+                if let Ok(method) = metadata.read_method(method_index) {
+                    let key = format!(
+                        "{type_name}::{}({})",
+                        method.name,
+                        method.method_json_params.join(",")
+                    );
+                    methods.insert(key, format!("0x{:x}", method.rva));
+                }
             }
         }
     }
@@ -90,10 +93,12 @@ fn write_type(
         output.push_str("[Serializable]\n");
     }
     let mut suffixes = Vec::new();
-    if let Some(parent_name) = metadata.read_parent_name(type_def)? {
+    if let Ok(Some(parent_name)) = metadata.read_parent_name(type_def) {
         suffixes.push(parent_name);
     }
-    suffixes.extend(metadata.read_interface_names(type_def)?);
+    if let Ok(interfaces) = metadata.read_interface_names(type_def) {
+        suffixes.extend(interfaces);
+    }
     output.push_str(&format!("{} {}", type_prefix(type_def), type_def.name));
     if !suffixes.is_empty() {
         output.push_str(&format!(" : {}", suffixes.join(", ")));
@@ -116,8 +121,14 @@ fn write_type(
 
     if let Some(method_start) = type_def.method_start {
         for method_index in method_start..method_start + type_def.method_count {
-            let method = metadata.read_method(method_index)?;
-            output.push_str(&write_method(&method));
+            match metadata.read_method(method_index) {
+                Ok(method) => {
+                    output.push_str(&write_method(&method));
+                }
+                Err(e) => {
+                    output.push_str(&format!("\t// Failed to read method {}: {}\n", method_index, e));
+                }
+            }
         }
     }
 

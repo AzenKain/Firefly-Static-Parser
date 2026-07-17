@@ -2,10 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
-use crate::metadata::{has_standard_metadata_magic, read_u32_le};
 
-const CUSTOM_METADATA_LOADER_RVA: usize = 0x3948920;
-
+#[allow(dead_code)]
 pub struct ObfuscatedFiles {
     pub game_assembly: PathBuf,
     pub global_path: PathBuf,
@@ -14,11 +12,15 @@ pub struct ObfuscatedFiles {
 }
 
 #[cfg(windows)]
+const CUSTOM_METADATA_LOADER_RVA: usize = 0x3948920;
+
+#[cfg(windows)]
 pub fn load_obfuscated_metadata(files: ObfuscatedFiles) -> Result<Vec<u8>> {
     use std::{
         ffi::{CString, OsStr},
         os::windows::ffi::OsStrExt,
     };
+    use crate::metadata::{has_standard_metadata_magic, read_u32_le};
 
     use anyhow::Context;
     use windows_sys::Win32::{Foundation::FreeLibrary, System::LibraryLoader::LoadLibraryW};
@@ -32,19 +34,8 @@ pub fn load_obfuscated_metadata(files: ObfuscatedFiles) -> Result<Vec<u8>> {
         );
     }
 
-    match crate::static_layout::inspect_game_assembly(&files.game_assembly) {
-        Ok(layout) => {
-            if let Err(error) = crate::layout_parser::inspect_metadata_sections(
-                &layout,
-                &files.global_data,
-                files.startup_path.as_deref(),
-            ) {
-                println!("Warning: failed to inspect custom metadata sections: {error:#}");
-            }
-        }
-        Err(error) => {
-            println!("Warning: failed to inspect custom static layout: {error:#}");
-        }
+    if let Err(error) = crate::static_layout::inspect_game_assembly(&files.game_assembly) {
+        println!("Warning: failed to inspect custom static layout: {error:#}");
     }
 
     let staged = stage_metadata_for_custom_loader(&files)?;
